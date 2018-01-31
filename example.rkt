@@ -1,17 +1,20 @@
 #lang racket
 
 (require rackunit)
+(require srfi/1)
 
 ;; memory limit
 (define (Mb-to-B n) (* n 1024 1024))
-(define MAX-BYTES (Mb-to-B 64))
+(define MAX-BYTES (Mb-to-B 256))
 (custodian-limit-memory (current-custodian) MAX-BYTES)
 
 (define (min a b)
   (if (< a b) a b))
 (define (max a b)
   (if (> a b) a b))
-
+(define (round-to-precision num digits)
+  (let ([factor (expt 10 digits)])
+    (/ (round (* factor num)) factor)))
 ;;;;;;;;;;;;;;;;;;;;;;;
 ;; GENETIC ALGORITHM ;;
 ;;;;;;;;;;;;;;;;;;;;;;;
@@ -62,32 +65,53 @@
                             (> (calculate-fitness org1 char=?)
                                (calculate-fitness org2 char=?))))]
          [survival-count (inexact->exact (floor (* (length population) SURVIVAL-RATIO)))]
-         [survivors (take fitness-sorted-orgs survival-count)])
+         [survivors (take fitness-sorted-orgs survival-count)]
+         [mated-survivors (natural-selection survivors)])
+
+    ;; create new pool
     (for/list ([current-population-size (in-range POPULATION-SIZE)]
-               [org (in-cycle survivors)])
+               [org (in-cycle mated-survivors)])
       (let* ([fitness (calculate-fitness org char=?)]
-             [mutation-threshold (max (* (- 1 (sqrt fitness))
-                                         mutation-probability)
-                                      MINIMUM-MUTATION-PROBABILITY)])
-        (when (= current-population-size (sub1 POPULATION-SIZE))
+             [mutation-threshold
+              (max (* (- 1 (sqrt fitness)) mutation-probability)
+                   MINIMUM-MUTATION-PROBABILITY)])
+        #;(when (= current-population-size (sub1 POPULATION-SIZE))
           (printf "mutation-threshold: ~a~n" (exact->inexact mutation-threshold)))
         (mutate-organism org mutation-threshold)))))
 
-#| > Randomly pick 2 organisms from the breeding pool and use them as the parents to create the next generation of organism for the population. |#
-#;(define (natural-selection pool population target)
-  ;; create a list of organisms as the next population
-  (for/list ([population-member population])
-    ;; The probability for two times the same organism is usually low.
-    ;; This is because choosing randomly 2 of a big set is unlikely to choose the same twice.
-    (let ([org-1 (list-ref pool (random (length pool)))]
-          [org-2 (list-ref pool (random (length pool)))])
-      ;; All new population members are children of the 2 randomly chosen parents
-      ;; They are all mutated crossovers.
-      (mutate-organism (crossover org-1 org-2)))))
+#| > Randomly pick 2 organisms from the breeding pool and
+use them as the parents to create the next generation of
+organism for the population. |#
+(define (natural-selection survivors)
+
+  (define (mate-two survivors)
+    (let ([the-two (take survivors 2)])
+      #;(printf "~s~n" (length the-two))
+      (crossover (car the-two) (cadr the-two))))
+
+  (define (mate-survivors survivors result)
+    (cond [(null? survivors)
+           #;(printf "survivors empty: ~a~n" survivors)
+           result]
+          [(null? (cdr survivors))
+           #;(printf "special case: ~a~n" survivors)
+           (cons (car survivors) result)]
+          [else
+           #;(printf "remaining survivors: ~s~n" (length survivors))
+           (let ([offspring (mate-two survivors)])
+             (mate-survivors (cddr survivors) #;(cons (car survivors)
+                                                      (cons (cadr survivors)
+                                                            (cons offspring result)))
+
+                             (cons offspring result)))]))
+
+  (mate-survivors (shuffle survivors) '())
+  ;; TODO: remove later?
+  (list (first survivors) (second survivors)))
 
 #|crossover does not calculate the fitness for the organism yet,
 because a crossed over organism needs to be mutated first.|#
-#;(define (crossover org1 org2)
+(define (crossover org1 org2)
   (let* ([org1-dna (Organism-dna org1)]
          [org2-dna (Organism-dna org2)]
          [mid-point (add1 (random (length org1-dna)))]
@@ -115,7 +139,7 @@ no mutation is done otherwise mutation is done.|#
 (random-seed 0)
 (define TARGET
   (string->list
-   (string-append
+   #;(string-append
     "I must not fear. "
     "Fear is the mind-killer. "
     "Fear is the little-death that brings total obliteration. "
@@ -123,14 +147,25 @@ no mutation is done otherwise mutation is done.|#
     "I will permit it to pass over me and through me. "
     "And when it has gone past I will turn the inner eye to see its path. "
     "Where the fear has gone there will be nothing. "
-    "Only I will remain.")))
+    "Only I will remain.")
+   "To be or not to be."))
 (define ALPHABET-REGEX #rx"[a-zA-Z0-9 .,;–!?-]")
-(define MAX-GENERATIONS 1500) ; 1200
-(define POPULATION-SIZE 300) ; 250
-(define SURVIVAL-RATIO 1/5) ; 1/5
-(define MAX-TIME 90)
-(define INITIAL-MUTATION-PROBABILITY 1/36) ; 1/40
-(define MINIMUM-MUTATION-PROBABILITY (/ 1 (length TARGET))) ; 1/40
+(define MAX-GENERATIONS 4000) ; 1500
+(define POPULATION-SIZE 500) ; 300
+(define SURVIVAL-RATIO 1/20) ; 1/5
+(define MAX-TIME 90) ; 90
+(define INITIAL-MUTATION-PROBABILITY (/ 1 20)) ; 1/36
+(define MINIMUM-MUTATION-PROBABILITY (/ 1 (length TARGET))) ; (/ 1 (length TARGET))
+
+#|
+BEST RESULT SO FAR:
+gen-max: 1000
+pop-size: 400
+survi: 1/10
+max-time: 90
+INITIAL-MUTATION-PROBABILITY: 1/20
+MINIMUM-MUTATION-PROBABILITY: (/ 2.5 (length TARGET))
+|#
 
 (define (main)
   (define start-time (current-inexact-milliseconds))
@@ -142,21 +177,22 @@ no mutation is done otherwise mutation is done.|#
              [population INITIAL-POPULATION])
     (let* ([fittest-org (get-fittest-organism population)]
            [fittest-org-fitness (calculate-fitness fittest-org char=?)])
-      (printf "fittest org: ~s~n" (list->string (take (Organism-dna fittest-org) 50)))
-      (printf "time passed: ~ss~n" (/ (- (current-inexact-milliseconds) start-time) 1000))
+      #;(printf "fittest org: ~s~n"
+              (list->string (take (Organism-dna fittest-org) (min 50 (length TARGET)))))
+      #;(printf "time passed: ~ss~n" (/ (- (current-inexact-milliseconds) start-time) 1000))
       (cond [(or (>= (/ (- (current-inexact-milliseconds) start-time) 1000) MAX-TIME)
                  (>= generation# MAX-GENERATIONS))
              (printf "Generation: ~s, Fitness: ~s~n"
                      generation#
-                     (exact->inexact fittest-org-fitness))]
+                     (round-to-precision (exact->inexact fittest-org-fitness) 3))]
             [(equal? (Organism-dna fittest-org) TARGET)
              (printf "Generation: ~s, Fitness: ~s~n"
                      generation#
-                     (exact->inexact fittest-org-fitness))]
+                     (round-to-precision (exact->inexact fittest-org-fitness) 3))]
             [else
              (printf "Generation: ~s, Fitness: ~s~n"
                      generation#
-                     (exact->inexact fittest-org-fitness))
+                     (round-to-precision (exact->inexact fittest-org-fitness) 3))
              (loop (add1 generation#)
                    (evolve-pool population
                                 INITIAL-MUTATION-PROBABILITY
@@ -165,3 +201,5 @@ no mutation is done otherwise mutation is done.|#
   (define end-time (current-inexact-milliseconds))
   (printf "Ending time: ~s~n" end-time)
   (printf "Time spent: ~ss~n" (/ (- end-time start-time) 1000)))
+
+(time (for ([i (in-range 50)]) (main)))
